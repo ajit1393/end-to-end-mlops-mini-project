@@ -1,23 +1,20 @@
-# data preprocessing
-
+# feature engineering
 import numpy as np
 import pandas as pd
 import os
-import re
-import nltk
-import string
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
+from sklearn.feature_extraction.text import CountVectorizer
+import yaml
 import logging
+import pickle
 
 # logging configuration
-logger = logging.getLogger('data_transformation')
+logger = logging.getLogger('feature_engineering')
 logger.setLevel('DEBUG')
 
 console_handler = logging.StreamHandler()
 console_handler.setLevel('DEBUG')
 
-file_handler = logging.FileHandler('transformation_errors.log')
+file_handler = logging.FileHandler('feature_engineering_errors.log')
 file_handler.setLevel('ERROR')
 
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -27,93 +24,90 @@ file_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
 
-nltk.download('wordnet')
-nltk.download('stopwords')
-
-def lemmatization(text):
-    """Lemmatize the text."""
-    lemmatizer = WordNetLemmatizer()
-    text = text.split()
-    text = [lemmatizer.lemmatize(word) for word in text]
-    return " ".join(text)
-
-def remove_stop_words(text):
-    """Remove stop words from the text."""
-    stop_words = set(stopwords.words("english"))
-    text = [word for word in str(text).split() if word not in stop_words]
-    return " ".join(text)
-
-def removing_numbers(text):
-    """Remove numbers from the text."""
-    text = ''.join([char for char in text if not char.isdigit()])
-    return text
-
-def lower_case(text):
-    """Convert text to lower case."""
-    text = text.split()
-    text = [word.lower() for word in text]
-    return " ".join(text)
-
-def removing_punctuations(text):
-    """Remove punctuations from the text."""
-    text = re.sub('[%s]' % re.escape(string.punctuation), ' ', text)
-    text = text.replace('؛', "")
-    text = re.sub('\s+', ' ', text).strip()
-    return text
-
-def removing_urls(text):
-    """Remove URLs from the text."""
-    url_pattern = re.compile(r'https?://\S+|www\.\S+')
-    return url_pattern.sub(r'', text)
-
-def remove_small_sentences(df):
-    """Remove sentences with less than 3 words."""
-    for i in range(len(df)):
-        if len(df.text.iloc[i].split()) < 3:
-            df.text.iloc[i] = np.nan
-
-def normalize_text(df):
-    """Normalize the text data."""
+def load_params(params_path: str) -> dict:
+    """Load parameters from a YAML file."""
     try:
-        df['content'] = df['content'].apply(lower_case)
-        logger.debug('converted to lower case')
-        df['content'] = df['content'].apply(remove_stop_words)
-        logger.debug('stop words removed')
-        df['content'] = df['content'].apply(removing_numbers)
-        logger.debug('numbers removed')
-        df['content'] = df['content'].apply(removing_punctuations)
-        logger.debug('punctuations removed')
-        df['content'] = df['content'].apply(removing_urls)
-        logger.debug('urls')
-        df['content'] = df['content'].apply(lemmatization)
-        logger.debug('lemmatization performed')
-        logger.debug('Text normalization completed')
-        return df
+        with open(params_path, 'r') as file:
+            params = yaml.safe_load(file)
+        logger.debug('Parameters retrieved from %s', params_path)
+        return params
+    except FileNotFoundError:
+        logger.error('File not found: %s', params_path)
+        raise
+    except yaml.YAMLError as e:
+        logger.error('YAML error: %s', e)
+        raise
     except Exception as e:
-        logger.error('Error during text normalization: %s', e)
+        logger.error('Unexpected error: %s', e)
+        raise
+
+def load_data(file_path: str) -> pd.DataFrame:
+    """Load data from a CSV file."""
+    try:
+        df = pd.read_csv(file_path)
+        df.fillna('', inplace=True)
+        logger.debug('Data loaded and NaNs filled from %s', file_path)
+        return df
+    except pd.errors.ParserError as e:
+        logger.error('Failed to parse the CSV file: %s', e)
+        raise
+    except Exception as e:
+        logger.error('Unexpected error occurred while loading the data: %s', e)
+        raise
+
+def apply_bow(train_data: pd.DataFrame, test_data: pd.DataFrame, max_features: int) -> tuple:
+    """Apply Count Vectorizer to the data."""
+    try:
+        vectorizer = CountVectorizer(max_features=max_features)
+
+        X_train = train_data['content'].values
+        y_train = train_data['sentiment'].values
+        X_test = test_data['content'].values
+        y_test = test_data['sentiment'].values
+
+        X_train_bow = vectorizer.fit_transform(X_train)
+        X_test_bow = vectorizer.transform(X_test)
+
+        train_df = pd.DataFrame(X_train_bow.toarray())
+        train_df['label'] = y_train
+
+        test_df = pd.DataFrame(X_test_bow.toarray())
+        test_df['label'] = y_test
+
+        pickle.dump(vectorizer, open('models/vectorizer.pkl', 'wb'))
+
+
+
+        logger.debug('Bag of Words applied and data transformed')
+        return train_df, test_df
+    except Exception as e:
+        logger.error('Error during Bag of Words transformation: %s', e)
+        raise
+
+def save_data(df: pd.DataFrame, file_path: str) -> None:
+    """Save the dataframe to a CSV file."""
+    try:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        df.to_csv(file_path, index=False)
+        logger.debug('Data saved to %s', file_path)
+    except Exception as e:
+        logger.error('Unexpected error occurred while saving the data: %s', e)
         raise
 
 def main():
     try:
-        # Fetch the data from data/raw
-        train_data = pd.read_csv('./data/raw/train.csv')
-        test_data = pd.read_csv('./data/raw/test.csv')
-        logger.debug('data loaded properly')
+        params = load_params('params.yaml')
+        max_features = params['feature_engineering']['max_features']
 
-        # Transform the data
-        train_processed_data = normalize_text(train_data)
-        test_processed_data = normalize_text(test_data)
+        train_data = load_data('./data/interim/train_processed.csv')
+        test_data = load_data('./data/interim/test_processed.csv')
 
-        # Store the data inside data/processed
-        data_path = os.path.join("./data", "interim")
-        os.makedirs(data_path, exist_ok=True)
-        
-        train_processed_data.to_csv(os.path.join(data_path, "train_processed.csv"), index=False)
-        test_processed_data.to_csv(os.path.join(data_path, "test_processed.csv"), index=False)
-        
-        logger.debug('Processed data saved to %s', data_path)
+        train_df, test_df = apply_bow(train_data, test_data, max_features)
+
+        save_data(train_df, os.path.join("./data", "processed", "train_bow.csv"))
+        save_data(test_df, os.path.join("./data", "processed", "test_bow.csv"))
     except Exception as e:
-        logger.error('Failed to complete the data transformation process: %s', e)
+        logger.error('Failed to complete the feature engineering process: %s', e)
         print(f"Error: {e}")
 
 if __name__ == '__main__':

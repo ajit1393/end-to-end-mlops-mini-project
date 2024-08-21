@@ -1,4 +1,5 @@
 [core]
     remote = myremote
 ['remote "myremote"']
-    url = C:\Users\Dell\AppData\Local\Temp
+    url = s3://emotion-mlops-project-bucket
+    region = us-east-1
